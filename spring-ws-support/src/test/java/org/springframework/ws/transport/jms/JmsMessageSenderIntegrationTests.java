@@ -26,16 +26,12 @@ import jakarta.jms.BytesMessage;
 import jakarta.jms.ConnectionFactory;
 import jakarta.jms.JMSException;
 import jakarta.jms.Message;
-import jakarta.jms.QueueBrowser;
-import jakarta.jms.Session;
 import jakarta.jms.TextMessage;
 import jakarta.xml.soap.MessageFactory;
 import jakarta.xml.soap.SOAPConstants;
 import jakarta.xml.soap.SOAPException;
 import org.apache.activemq.ActiveMQConnectionFactory;
-import org.awaitility.Awaitility;
 import org.jspecify.annotations.Nullable;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,8 +41,6 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jms.annotation.EnableJms;
 import org.springframework.jms.annotation.JmsListener;
 import org.springframework.jms.config.DefaultJmsListenerContainerFactory;
-import org.springframework.jms.core.BrowserCallback;
-import org.springframework.jms.core.JmsTemplate;
 import org.springframework.jms.core.MessagePostProcessor;
 import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.support.MessageBuilder;
@@ -82,13 +76,12 @@ class JmsMessageSenderIntegrationTests {
 		try (WebServiceConnection connection = this.messageSender.createConnection(uri)) {
 			SoapMessage soapRequest = new SaajSoapMessage(messageFactory.createMessage());
 			soapRequest.setSoapAction(SOAP_ACTION);
-			connection.send(soapRequest);
-
 			this.testJmsListener.handleMessage((message) -> {
 				assertNonEmptyByteMessage(message);
 				return createEmptySoapMessage();
 			});
 
+			connection.send(soapRequest);
 			SoapMessage response = (SoapMessage) connection.receive(new SaajSoapMessageFactory(messageFactory));
 			assertThat(response).isNotNull();
 			assertThat(response.getSoapAction()).isEqualTo(SOAP_ACTION);
@@ -97,7 +90,6 @@ class JmsMessageSenderIntegrationTests {
 	}
 
 	@Test
-	@Disabled("flaky")
 	void testSendAndReceiveQueueBytesMessagePermanentQueue() throws Exception {
 		String responseQueueName = "SenderResponseQueue";
 		URI uri = new URI("jms:SenderRequestQueue?replyToName=" + responseQueueName + "&deliveryMode=NON_PERSISTENT");
@@ -105,14 +97,12 @@ class JmsMessageSenderIntegrationTests {
 		try (WebServiceConnection connection = this.messageSender.createConnection(uri)) {
 			SoapMessage soapRequest = new SaajSoapMessage(messageFactory.createMessage());
 			soapRequest.setSoapAction(SOAP_ACTION);
-			connection.send(soapRequest);
-
 			this.testJmsListener.handleMessage((message) -> {
 				assertNonEmptyByteMessage(message);
 				return createEmptySoapMessage();
 			});
-			waitForReply(responseQueueName);
 
+			connection.send(soapRequest);
 			SoapMessage response = (SoapMessage) connection.receive(new SaajSoapMessageFactory(messageFactory));
 			assertThat(response).isNotNull();
 			assertThat(response.getSoapAction()).isEqualTo(SOAP_ACTION);
@@ -126,13 +116,12 @@ class JmsMessageSenderIntegrationTests {
 		try (WebServiceConnection connection = this.messageSender.createConnection(uri)) {
 			SoapMessage soapRequest = new SaajSoapMessage(messageFactory.createMessage());
 			soapRequest.setSoapAction(SOAP_ACTION);
-			connection.send(soapRequest);
-
 			this.testJmsListener.handleMessage((message) -> {
 				assertNonEmptyTextMessage(message);
 				return createEmptySoapMessage();
 			});
 
+			connection.send(soapRequest);
 			SoapMessage response = (SoapMessage) connection.receive(new SaajSoapMessageFactory(messageFactory));
 			assertThat(response).isNotNull();
 			assertThat(response.getSoapAction()).isEqualTo(SOAP_ACTION);
@@ -142,17 +131,18 @@ class JmsMessageSenderIntegrationTests {
 
 	@Test
 	void testSendNoResponse() throws Exception {
+		JmsMessageSender customSender = new JmsMessageSender(this.connectionFactory);
+		customSender.setReceiveTimeout(Duration.ofSeconds(1).toMillis());
 		URI uri = new URI("jms:SenderRequestQueue?deliveryMode=NON_PERSISTENT");
-		try (WebServiceConnection connection = this.messageSender.createConnection(uri)) {
+		try (WebServiceConnection connection = customSender.createConnection(uri)) {
 			SoapMessage soapRequest = new SaajSoapMessage(messageFactory.createMessage());
 			soapRequest.setSoapAction(SOAP_ACTION);
-			connection.send(soapRequest);
-
 			this.testJmsListener.handleMessage((message) -> {
 				assertNonEmptyByteMessage(message);
 				return null;
 			});
 
+			connection.send(soapRequest);
 			SoapMessage response = (SoapMessage) connection.receive(new SaajSoapMessageFactory(messageFactory));
 			assertThat(response).isNull();
 		}
@@ -168,13 +158,12 @@ class JmsMessageSenderIntegrationTests {
 		try (JmsSenderConnection connection = (JmsSenderConnection) this.messageSender.createConnection(uri)) {
 			connection.setPostProcessor(processor);
 			SoapMessage soapRequest = new SaajSoapMessage(messageFactory.createMessage());
-			connection.send(soapRequest);
-
 			this.testJmsListener.handleMessage((message) -> {
 				assertNonEmptyByteMessage(message);
 				assertThat(message.getBooleanProperty("processed")).isTrue();
 				return null;
 			});
+			connection.send(soapRequest);
 		}
 	}
 
@@ -215,18 +204,6 @@ class JmsMessageSenderIntegrationTests {
 		}
 	}
 
-	private void waitForReply(String destinationName) {
-		JmsTemplate jmsTemplate = new JmsTemplate(this.connectionFactory);
-		Awaitility.await()
-			.atMost(Duration.ofSeconds(10))
-			.until(() -> jmsTemplate.browse(destinationName, new BrowserCallback<Boolean>() {
-				@Override
-				public Boolean doInJms(Session session, QueueBrowser browser) throws JMSException {
-					return browser.getEnumeration().hasMoreElements();
-				}
-			}));
-	}
-
 	static class TestJmsListener {
 
 		private ThrowingFunction<jakarta.jms.Message, @Nullable Object> messageHandler;
@@ -263,7 +240,7 @@ class JmsMessageSenderIntegrationTests {
 		@Bean
 		JmsMessageSender messageSender(ConnectionFactory connectionFactory) {
 			JmsMessageSender messageSender = new JmsMessageSender(connectionFactory);
-			messageSender.setReceiveTimeout(Duration.ofSeconds(1).toMillis());
+			messageSender.setReceiveTimeout(Duration.ofSeconds(5).toMillis());
 			return messageSender;
 		}
 
